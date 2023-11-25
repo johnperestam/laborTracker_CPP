@@ -20,49 +20,22 @@
 //#define ROTARY_ENCODER_B_PIN 36         //CLK
 //#define ROTARY_ENCODER_BUTTON_PIN 35    //SW
 
-#define ROTARY_ENCODER_STEPS 4
-
-//colors
-#define BG_BLK_FG_WHITE "\e[40;97m"   // background: black, foreground: white
-#define BG_BLK_FG_GRN   "\e[40;92m"   // background: black, foreground: green
-#define BG_BLK_FG_RED   "\e[40;91m"   // background: black, foreground: red
-#define BG_BLK_FG_YEL   "\e[40;93m"   // background: black, foreground: yellow
-#define BG_BLK_FG_BLU   "\e[40;94m"   // background: black, foreground: blue
-#define BG_BLK_FG_MAG   "\e[40;95m"   // background: black, foreground: magenta
-#define BG_BLK_FG_CYAN  "\e[40;96m"   // background: black, foreground: cyan
-
-#define BG_WHITE_FG_BLK "\e[47;30m"   // background: white, foreground: black
-#define BG_WHITE_FG_BLU "\e[47;94m"  // background: white, foreground: blue
-#define BG_WHITE_FG_RED "\e[47;91m"   // background: white, foreground: red
-#define BG_RED_FG_BLK   "\e[101;30m"  // background: red, foreground: black
-#define BG_RED_FG_WHITE "\e[101;97m"  // background: red, foreground: white
-#define BG_GRN_FG_BLK   "\e[102;30m"  // background: green, foreground: black
-#define BG_GRN_FG_WHITE "\e[102;97m"  // background: green, foreground: white
-#define BG_YEL_FG_BLK   "\e[103;30m"  // background: yellow, foreground: black
-#define BG_BLU_FG_WHITE "\e[104;97m"  // background: blue, foreground: white
-#define BG_BLU_FG_BLK   "\e[104;30m"  // background: blue, foreground: black
-#define BG_MAG_FG_BLK   "\e[105;30m"  // background: magenta, foreground: black
-#define BG_MAG_FG_WHITE "\e[105;97m"  // background: magenta, foreground: white
-#define BG_CYAN_FG_BLK  "\e[106;30m"  // background: cyan, foreground: black
-
-#define INVERSE         "\e[7m"       // inverse current color
-#define BLINK           "\e[5m"       //  blink 
-#define NORMAL          "\e[0m"       // normal state
-
 
 fabgl::VGATextController DisplayController;
 fabgl::Terminal          Terminal;
 
 // Terminal process focus
 String process = PROCESS;
-String servr = SERVER;
-String ws_server = WS_SERVER;
+String server_ip = SERVER;
+String sub_dir = SERVER_SUB_DIR;
 String load_orders_endpoint = LOAD_ORDERS_ENDPOINT;
 String update_db_endpoint = UPDATE_DB_ENDPOINT;
+IPAddress server(xxx,xxx,xxx,xxx);    //external IP
 
+unsigned long shortPressAfterMiliseconds = 100;   //how long short press shoud be. Do not set too low to avoid bouncing (false press events).
+unsigned long longPressAfterMiliseconds = 1000;  //how long ?ong press shoud be.
+String websock_message;
 
-unsigned long pressedTime;
-unsigned long releasedTime;
 unsigned int currentLineNumber;
 unsigned int currentRowID;
 unsigned long currentOrderNum;
@@ -77,6 +50,8 @@ unsigned int OrderSelectRowCount = 0;
 unsigned int LineSelectRowCount = 0;
 unsigned int rowCount = 0;
 unsigned int orderIndex = 0;
+unsigned int lineIndex = 0;
+unsigned int iIndex=0;
 int enc_prev_val = 0;
 unsigned int orderPages = 0;
 unsigned int linePages = 0;
@@ -120,13 +95,13 @@ enum class State {
 State state = State::OrderSelect;
 
 void post(const JsonDocument& post_req ){
-  http.begin("http://" + servr + update_db_endpoint);
+  http.begin("http://" + server_ip + sub_dir + update_db_endpoint);
   http.addHeader("Content-Type", "application/json");
   String sJsonPost;
   serializeJson(post_req,sJsonPost);
   unsigned int httpResponseCode = http.POST(sJsonPost);
-   Serial.printf("response code: %d\n",httpResponseCode);
-   Serial.println(sJsonPost);
+   //Serial.printf("response code: %d\n",httpResponseCode);
+   //Serial.println(sJsonPost);
   if (httpResponseCode == 200){
     active_array.clear();
     state = State::OrderSelect;
@@ -143,7 +118,7 @@ void post(const JsonDocument& post_req ){
 
 void loadOrders(){
   http.useHTTP10(true);
-  http.begin("http://" + servr + load_orders_endpoint + "?process=" + process);
+  http.begin("http://" + server_ip + sub_dir + load_orders_endpoint + "?process=" + process);
   http.GET();
   
 //  DeserializationError error = deserializeJson(doc, http.getStream(),DeserializationOption::Filter(filter));
@@ -196,17 +171,14 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t payload_length) {
                   for (int l = 0; l < doc[k][i]["lines"][j].size(); l++){
                     if (doc[k][i]["lines"][j][l]["row_id"] == rowId){
                       doc[k][i]["lines"][j][l]["process_status"] = newStatus;
+                      unsigned long orderNumber = doc[k][i]["order_num"];
                       switch (state){
                         case State::OrderSelect:
-                          //screenHeader();
                           printLine(i,0);
-                          Terminal.printf("\e[%d;%dH",cursorV,1);
                           break;
                         case State::LineSelect:
                           if (currentOrderNum == doc[k][i]["order_num"]){
-                            //screenHeader();
-                            printLine(j,i);
-                            Terminal.printf("\e[%d;%dH",cursorV,1);
+                            printLine(l,i);
                           }
                           break;
                         case State::StatusSelect:
@@ -232,6 +204,105 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t payload_length) {
   }
 }
 
+
+void on_button_short_click() {
+  switch (state){
+    case State::OrderSelect:
+      {
+      orderIndex = cursorV-init_cursorV;
+      currentOrderNum = doc[orderCurrentPage][orderIndex]["order_num"];
+      //Serial.printf("page: %d, index: %d\n", orderCurrentPage,orderIndex);
+      state = State::LineSelect;
+      LineSelectScreen(lineCurrentPage,orderIndex);
+      }
+      break;
+    case State::LineSelect:
+      {
+      if (doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage].size() <= cursorV-init_cursorV ){        //RETURN TO ORDER SELECT option
+        state = State::OrderSelect;
+        draw();
+        } else {
+          //Serial.printf("page: %d, index: %d\n", lineCurrentPage,cursorV-init_cursorV);
+          lineIndex = cursorV-init_cursorV;
+          currentRowID = doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage][cursorV-init_cursorV]["row_id"];
+          currentLineNumber = doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage][cursorV-init_cursorV]["line_number"];
+          String lStatus = doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage][cursorV-init_cursorV]["process_status"];   
+          state = State::StatusSelect;
+          StatusSelectScreen(currentRowID,currentLineNumber,lStatus);
+        }
+      }
+      break; 
+    case State::StatusSelect:
+     message.clear();
+     switch(cursorV-init_cursorV){
+      case 0:            // first option
+        if (currentStatus == "Running"){  
+          websock_message = String(currentRowID)+",stop_job";
+          message[String(currentRowID)] = "stop_job";
+          webSocket.sendTXT(websock_message);
+          post(message);
+        }
+        if (currentStatus == "Stopped" || currentStatus == "Not Started"){
+          websock_message = String(currentRowID)+",start_job";
+          message[String(currentRowID)] = "start_job";
+          webSocket.sendTXT(websock_message);
+          post(message);         
+        }
+        break;
+      case 1:           // second option
+        if (currentStatus == "Not Started"){   //RETURN TO LINE SELECT option
+          state = State::LineSelect;
+          draw();
+        }
+        else {
+          //lineCurrentPage = 0;
+          websock_message = String(currentRowID)+",complete_job";
+          message[String(currentRowID)] = "complete_job";
+          webSocket.sendTXT(websock_message);
+          post(message);
+        }
+        break;
+      case 2:           // RETURN TO LINE SELECT option
+        state = State::LineSelect;
+        draw();
+        break;
+     }
+  } 
+}
+
+void on_button_long_click() {
+  Serial.print("button LONG press ");
+  Serial.print(millis());
+  Serial.println(" milliseconds after restart");
+}
+
+void handle_rotary_button() {
+  static unsigned long lastTimeButtonDown = 0;
+  static bool wasButtonDown = false;
+
+  bool isEncoderButtonDown = rotaryEncoder.isEncoderButtonDown();
+  //isEncoderButtonDown = !isEncoderButtonDown; //uncomment this line if your button is reversed
+
+  if (isEncoderButtonDown) {
+    if (!wasButtonDown) {
+      //start measuring
+      lastTimeButtonDown = millis();
+    }
+    //else we wait since button is still down
+    wasButtonDown = true;
+    return;
+  }
+  //button is up
+  if (wasButtonDown) {
+    //click happened, lets see if it was short click, long click or just too short
+    if (millis() - lastTimeButtonDown >= longPressAfterMiliseconds) {
+      on_button_long_click();
+    } else if (millis() - lastTimeButtonDown >= shortPressAfterMiliseconds) {
+      on_button_short_click();
+    }
+  }
+  wasButtonDown = false;
+}
 
 void setup() {
 
@@ -273,7 +344,7 @@ void setup() {
   Terminal.write("Connected!");
   delay(500);
   
-  webSocket.begin(ws_server, 8000, "/");
+  webSocket.begin(server_ip, 8000, "/");
   webSocket.onEvent(webSocketEvent);
   webSocket.setReconnectInterval(3000);
 
@@ -293,7 +364,7 @@ void draw(){
 }
 
 
-void navigate(int n){
+unsigned int navigate(int n){
   switch (state) {
     case State::OrderSelect:
       if (cursorV + n < init_cursorV){
@@ -301,7 +372,7 @@ void navigate(int n){
           //Serial.println("decrimenting orderCurrentPage count");
           orderCurrentPage--;
           draw();
-          cursorV = 32;
+          cursorV = 33;
         } else {
           cursorV = init_cursorV;
         }
@@ -316,6 +387,7 @@ void navigate(int n){
       } else {
         cursorV = cursorV + n;
       }
+      orderIndex = cursorV;
       Terminal.printf("\e[%d;%dH",cursorV,cursorH);   // move cursor to v,h
       break;
     case State::LineSelect:
@@ -323,7 +395,7 @@ void navigate(int n){
         if ( lineCurrentPage !=0 && ((lineCurrentPage - 0) | ((linePages) - lineCurrentPage)) >= 0) {
           lineCurrentPage--;
           draw();
-          cursorV = 32;
+          cursorV = 33;
         } else {
           cursorV = init_cursorV;
         }
@@ -338,6 +410,7 @@ void navigate(int n){
       } else {
         cursorV = cursorV + n;
       }
+      lineIndex = cursorV;
       Terminal.printf("\e[%d;%dH",cursorV,cursorH);   // move cursor to v,h
       break;
     case State::StatusSelect:
@@ -351,6 +424,7 @@ void navigate(int n){
       Terminal.printf("\e[%d;%dH",cursorV,cursorH);   // move cursor to v,h 
       break;
   }    
+  return cursorV;
 }
 
 void checkForActive(){
@@ -473,6 +547,17 @@ void activeLinesDisplay(){
   checkForActive();
   Terminal.write("\e[1;65H");   // move cursor to 1,65
   Terminal.printf("%sACTIVE LINES:%s%3d",BG_WHITE_FG_BLU,BG_WHITE_FG_RED,active_array.size());  // show number of active lines
+  switch(state){
+    case State::OrderSelect:
+      Terminal.printf("\e[%d;1H",orderIndex);
+      break;
+    case State::LineSelect:
+      Terminal.printf("\e[%d;1H",lineIndex);
+      break;
+    case State::StatusSelect:
+      Terminal.write("\e[15;26H");   // move cursor to 26,15 - default location for Status select popup screen
+      break;
+  }
   Terminal.write(NORMAL);
 }
 
@@ -485,7 +570,8 @@ void screenHeader(){
       Terminal.write("\e[1;1H");   // move cursor to 1,1 
       {
       init_cursorV = 4;
-      cursorV = 4;                   //set cursor position for item selection
+      cursorV = init_cursorV + orderIndex;                   //set cursor position for item selection
+      //cursorV = init_cursorV + iIndex;
       cursorH = 1;
       Terminal.printf("%s%s",BG_WHITE_FG_BLK,"                               SELECT ORDER                                     ");
       Terminal.write(BG_BLK_FG_WHITE);
@@ -513,7 +599,7 @@ void screenHeader(){
       Terminal.write(BG_WHITE_FG_BLK);
       Terminal.printf("                               PAGE %d OF %d                                      ",orderCurrentPage+1,orderPages);    
       Terminal.write(BG_BLK_FG_WHITE);
-      Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 4,1
+      //Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 4,1
       }
       break;
     case State::LineSelect:
@@ -523,7 +609,8 @@ void screenHeader(){
       Terminal.write("\e[1;1H");   // move cursor to 1,1 
       {
       init_cursorV = 5;
-      cursorV = 5;                   //set cursor position for item selection
+      cursorV = init_cursorV + lineIndex;                   //set cursor position for item selection
+      //cursorV = init_cursorV + iIndex;
       cursorH = 1;
       const char* custName = doc[orderCurrentPage][orderIndex]["customer_name"];
       const unsigned long orderNum = doc[orderCurrentPage][orderIndex]["order_num"];
@@ -547,7 +634,7 @@ void screenHeader(){
       Terminal.write(BG_WHITE_FG_BLK);
       Terminal.printf("                               PAGE %d OF %d                                      ",lineCurrentPage+1,linePages);    
       Terminal.write(BG_BLK_FG_WHITE);
-      Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 5,1
+      //Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 5,1
       }
       break;
     case State::StatusSelect:
@@ -586,22 +673,27 @@ void screenHeader(){
 
 void OrderSelectScreen(int curPage, bool reload){
   lineCurrentPage = 0;
+  lineIndex = 0;
   if (curPage == 0 && reload){
     Serial.println("orders reloading....");
     loadOrders();
   }
   screenHeader();
+  activeLinesDisplay();
+  Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 4,1
   OrderSelectRowCount = doc[orderCurrentPage].size();
   for (int i=0; i < OrderSelectRowCount; i++) {
     printLine(i,0);
     }
-  activeLinesDisplay();
-  Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 4,1
+  //activeLinesDisplay();
+  Terminal.printf("\e[%d;%dH",init_cursorV+orderIndex,cursorH);   // move cursor to last position on this screen
 }
 
 void LineSelectScreen(int curPage,int index){
   linePages = doc[orderCurrentPage][index]["lines"].size();
   screenHeader();
+  activeLinesDisplay();
+  Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 5,1
   LineSelectRowCount = doc[orderCurrentPage][index]["lines"][curPage].size();
   for (int i=0; i < LineSelectRowCount; i++) {
     printLine(i,index);
@@ -611,10 +703,9 @@ void LineSelectScreen(int curPage,int index){
     Terminal.write(BG_YEL_FG_BLK);
     Terminal.write("RETURN TO ORDER SELECT");
   }
-  activeLinesDisplay();
+  //activeLinesDisplay();
   Terminal.write(BG_BLK_FG_WHITE);
-  Terminal.printf("\e[%d;%dH",init_cursorV,cursorH);   // move cursor to 4,1
-  
+  Terminal.printf("\e[%d;%dH",init_cursorV+lineIndex,cursorH);   // move cursor to last position on this screen
 }
 
 void StatusSelectScreen(int rowID, int lineNumber, String lineStat){
@@ -688,79 +779,20 @@ void StatusSelectScreen(int rowID, int lineNumber, String lineStat){
 }
 
 void loop() {
-  String websock_message;
+//  String websock_message;
   if (rotaryEncoder.encoderChanged()){
     if (rotaryEncoder.readEncoder() < enc_prev_val){
       enc_prev_val = rotaryEncoder.readEncoder();
-      navigate(-1);
+      //navigate(-1);
+      iIndex = navigate(-1);
     }
     if (rotaryEncoder.readEncoder() > enc_prev_val){
       enc_prev_val = rotaryEncoder.readEncoder();
-      navigate(1);
+      //navigate(1);
+      iIndex = navigate(1);
     }
   }
-  if (rotaryEncoder.isEncoderButtonClicked()){
-    //Serial.printf("cursor pos: %d\n",cursorV);
-    switch (state){
-      case State::OrderSelect:
-        {
-        orderIndex = cursorV-init_cursorV;
-        currentOrderNum = doc[orderCurrentPage][orderIndex]["order_num"];
-        //Serial.printf("orderIndex: %d, orderNum: %d\n", orderIndex,currentOrderNum);
-        state = State::LineSelect;
-        LineSelectScreen(lineCurrentPage,orderIndex);
-        }
-        break;
-      case State::LineSelect:
-        {
-        if (doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage].size() <= cursorV-init_cursorV ){        //RETURN TO ORDER SELECT option
-          state = State::OrderSelect;
-          draw();
-          } else {
-            currentRowID = doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage][cursorV-init_cursorV]["row_id"];
-            currentLineNumber = doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage][cursorV-init_cursorV]["line_number"];
-            String lStatus = doc[orderCurrentPage][orderIndex]["lines"][lineCurrentPage][cursorV-init_cursorV]["process_status"];   
-            state = State::StatusSelect;
-            StatusSelectScreen(currentRowID,currentLineNumber,lStatus);
-          }
-        }
-        break; 
-      case State::StatusSelect:
-       message.clear();
-       switch(cursorV-init_cursorV){
-        case 0:            // first option
-          if (currentStatus == "Running"){  
-            websock_message = String(currentRowID)+",stop_job";
-            message[String(currentRowID)] = "stop_job";
-            webSocket.sendTXT(websock_message);
-            post(message);
-          }
-          if (currentStatus == "Stopped" || currentStatus == "Not Started"){
-            websock_message = String(currentRowID)+",start_job";
-            message[String(currentRowID)] = "start_job";
-            webSocket.sendTXT(websock_message);
-            post(message);         
-          }
-          break;
-        case 1:           // second option
-          if (currentStatus == "Not Started"){   //RETURN TO LINE SELECT option
-            state = State::LineSelect;
-            draw();
-          }
-          else {
-            //lineCurrentPage = 0;
-            websock_message = String(currentRowID)+",complete_job";
-            message[String(currentRowID)] = "complete_job";
-            webSocket.sendTXT(websock_message);
-            post(message);
-          }
-          break;
-        case 2:           // RETURN TO LINE SELECT option
-          state = State::LineSelect;
-          draw();
-          break;
-       }
-    } 
-  }
-    webSocket.loop();
+
+  handle_rotary_button();
+  webSocket.loop();
 }
